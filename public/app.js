@@ -26,11 +26,24 @@ function getUrl() {
 function normalizeBase(value) {
   const v = value.trim();
   if (!v) return '';
-  return v.replace(/\/+$/, '');
+  try {
+    const parsed = new URL(v);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '';
+    }
+    // Use only origin for API base to avoid malformed patterns.
+    return parsed.origin.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
 }
 
 function getApiBase() {
-  return normalizeBase(localStorage.getItem(API_STORAGE_KEY) || '');
+  const normalized = normalizeBase(localStorage.getItem(API_STORAGE_KEY) || '');
+  if (!normalized) {
+    localStorage.removeItem(API_STORAGE_KEY);
+  }
+  return normalized;
 }
 
 function apiPath(path) {
@@ -49,11 +62,18 @@ function saveApiBase() {
 
   try {
     const parsed = new URL(raw);
-    localStorage.setItem(API_STORAGE_KEY, normalizeBase(parsed.toString()));
-    apiBaseInput.value = normalizeBase(parsed.toString());
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('invalid_protocol');
+    }
+    const cleanBase = normalizeBase(parsed.toString());
+    if (!cleanBase) {
+      throw new Error('invalid_base');
+    }
+    localStorage.setItem(API_STORAGE_KEY, cleanBase);
+    apiBaseInput.value = cleanBase;
     setStatus('API guardada correctamente.', 'ok');
   } catch {
-    setStatus('La URL de API no es válida.', 'err');
+    setStatus('La URL de API no es válida. Usá solo dominio, ej: https://tu-app.onrender.com', 'err');
   }
 }
 
@@ -69,7 +89,8 @@ async function fetchFormats() {
   resetFormats();
 
   try {
-    const response = await fetch(apiPath('/api/formats'), {
+    const apiUrl = apiPath('/api/formats');
+    const response = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })
@@ -105,7 +126,11 @@ async function fetchFormats() {
     formatSelect.disabled = false;
     setStatus(`Listo: ${filtered.length} formato(s) encontrados.`, 'ok');
   } catch (error) {
-    setStatus(error.message, 'err');
+    const message =
+      error?.message && error.message.includes('expected pattern')
+        ? 'La URL de API guardada es inválida. Reconfigurala en "Backend API URL".'
+        : error.message;
+    setStatus(message, 'err');
   } finally {
     formatsBtn.disabled = false;
   }
@@ -130,7 +155,8 @@ async function downloadSelected() {
   formatsBtn.disabled = true;
 
   try {
-    const response = await fetch(apiPath('/api/download'), {
+    const apiUrl = apiPath('/api/download');
+    const response = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, formatId })
@@ -157,7 +183,11 @@ async function downloadSelected() {
 
     setStatus(`Descarga completada: ${filename}`, 'ok');
   } catch (error) {
-    setStatus(error.message, 'err');
+    const message =
+      error?.message && error.message.includes('expected pattern')
+        ? 'La URL de API guardada es inválida. Reconfigurala en "Backend API URL".'
+        : error.message;
+    setStatus(message, 'err');
   } finally {
     downloadBtn.disabled = false;
     formatsBtn.disabled = false;
