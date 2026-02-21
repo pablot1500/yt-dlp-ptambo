@@ -82,6 +82,7 @@ function getYtDlpAuthArgs() {
 
 function buildYtDlpArgs(extraArgs) {
   return [
+    '--ignore-config',
     '--no-warnings',
     '--extractor-args',
     'youtube:player_client=android,web',
