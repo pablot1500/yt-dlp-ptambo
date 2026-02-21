@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
 const MAX_BODY_SIZE = '1mb';
+const TMP_COOKIES_FILE = '/tmp/yt-cookies.txt';
 
 if (!fs.existsSync(DOWNLOADS_DIR)) {
   fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
@@ -57,6 +58,46 @@ function runYtDlp(args) {
   });
 }
 
+function getYtDlpAuthArgs() {
+  const args = [];
+
+  if (process.env.YTDLP_COOKIES_B64) {
+    try {
+      const cookiesTxt = Buffer.from(process.env.YTDLP_COOKIES_B64, 'base64').toString('utf8');
+      if (cookiesTxt.includes('youtube.com')) {
+        fs.writeFileSync(TMP_COOKIES_FILE, cookiesTxt, 'utf8');
+        args.push('--cookies', TMP_COOKIES_FILE);
+      }
+    } catch {
+      // Ignore invalid base64 and continue without cookies.
+    }
+  } else if (process.env.YTDLP_COOKIES_FILE && fs.existsSync(process.env.YTDLP_COOKIES_FILE)) {
+    args.push('--cookies', process.env.YTDLP_COOKIES_FILE);
+  } else if (process.env.YTDLP_COOKIES_FROM_BROWSER) {
+    args.push('--cookies-from-browser', process.env.YTDLP_COOKIES_FROM_BROWSER);
+  }
+
+  return args;
+}
+
+function buildYtDlpArgs(extraArgs) {
+  return [
+    '--no-warnings',
+    '--extractor-args',
+    'youtube:player_client=android,web',
+    ...getYtDlpAuthArgs(),
+    ...extraArgs
+  ];
+}
+
+function explainYtDlpError(errorMessage) {
+  const message = String(errorMessage || '');
+  if (message.includes('Sign in to confirm you’re not a bot') || message.includes("Sign in to confirm you're not a bot")) {
+    return 'YouTube está pidiendo verificación anti-bot para ese video. Configurá cookies de YouTube en el backend (Render env `YTDLP_COOKIES_B64`) e intentá de nuevo.';
+  }
+  return message;
+}
+
 app.post('/api/formats', async (req, res) => {
   const { url } = req.body || {};
 
@@ -65,11 +106,10 @@ app.post('/api/formats', async (req, res) => {
   }
 
   try {
-    const { stdout } = await runYtDlp([
-      '--no-warnings',
+    const { stdout } = await runYtDlp(buildYtDlpArgs([
       '-J',
       url
-    ]);
+    ]));
 
     const metadata = JSON.parse(stdout);
     const formats = (metadata.formats || []).map((f) => {
@@ -89,7 +129,7 @@ app.post('/api/formats', async (req, res) => {
 
     return res.json({ formats });
   } catch (error) {
-    return res.status(500).json({ error: `No pude obtener formatos: ${error.message}` });
+    return res.status(500).json({ error: `No pude obtener formatos: ${explainYtDlpError(error.message)}` });
   }
 });
 
@@ -109,28 +149,26 @@ app.post('/api/download', async (req, res) => {
 
   try {
     const outputTemplate = path.join(DOWNLOADS_DIR, '%(title)s [%(id)s].%(ext)s');
-    const args = [
-      '--no-warnings',
+    const args = buildYtDlpArgs([
       '--newline',
       '-f',
       formatId,
       '-o',
       outputTemplate,
       url
-    ];
+    ]);
 
     // Si hay ffmpeg disponible, yt-dlp mergea audio+video cuando aplica.
     await runYtDlp(args);
 
-    const { stdout: filenameStdout } = await runYtDlp([
-      '--no-warnings',
+    const { stdout: filenameStdout } = await runYtDlp(buildYtDlpArgs([
       '--print',
       path.join(DOWNLOADS_DIR, '%(title)s [%(id)s].%(ext)s'),
       '-f',
       formatId,
       '--simulate',
       url
-    ]);
+    ]));
 
     const candidate = filenameStdout.split('\n').map((v) => v.trim()).filter(Boolean).pop();
 
@@ -153,7 +191,7 @@ app.post('/api/download', async (req, res) => {
 
     return res.download(candidate, path.basename(candidate));
   } catch (error) {
-    return res.status(500).json({ error: `Error al descargar: ${error.message}` });
+    return res.status(500).json({ error: `Error al descargar: ${explainYtDlpError(error.message)}` });
   }
 });
 

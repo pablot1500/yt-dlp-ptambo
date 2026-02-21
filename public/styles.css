@@ -117,6 +117,25 @@ label,
   margin-bottom: 14px;
 }
 
+.advanced-config {
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 10px 2px;
+  background: rgba(8, 15, 28, 0.28);
+}
+
+.advanced-config summary {
+  cursor: pointer;
+  color: #bfdbfe;
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+}
+
+.advanced-config summary span {
+  color: #93c5fd;
+}
+
 input,
 select,
 button {

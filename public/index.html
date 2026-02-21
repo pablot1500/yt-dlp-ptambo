@@ -20,11 +20,14 @@
       </header>
 
       <section class="card">
-        <label for="apiBaseInput">Backend API URL (Render o local)</label>
-        <div class="row">
-          <input id="apiBaseInput" type="url" placeholder="https://tu-backend.onrender.com (vacío = mismo dominio)" autocomplete="off" />
-          <button id="saveApiBtn" class="btn-ghost">Guardar API</button>
-        </div>
+        <details class="advanced-config">
+          <summary>Ajustes avanzados <span>(esto no se toca)</span></summary>
+          <label for="apiBaseInput">Backend API URL (Render o local)</label>
+          <div class="row">
+            <input id="apiBaseInput" type="url" placeholder="https://tu-backend.onrender.com (vacío = mismo dominio)" autocomplete="off" />
+            <button id="saveApiBtn" class="btn-ghost">Guardar API</button>
+          </div>
+        </details>
 
         <label for="urlInput">Link de YouTube</label>
         <div class="row">

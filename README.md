@@ -88,3 +88,22 @@ La URL queda guardada en `localStorage` del navegador.
 - El plan free de Render puede “dormir” el servicio por inactividad; la primera request puede tardar.
 - No uses solo frontend para esto: descargar desde YouTube requiere backend.
 - Usá esta herramienta solo con contenido que tengas derecho a descargar.
+
+## Si aparece error anti-bot de YouTube
+
+Para algunos videos YouTube exige sesión. En Render podés cargar cookies:
+
+1. Exportá tus cookies de YouTube en formato `cookies.txt`.
+2. Convertí a base64:
+
+```bash
+base64 -i cookies.txt
+```
+
+3. En Render -> Service -> Environment, creá:
+
+```text
+YTDLP_COOKIES_B64=<pegá_el_base64_completo>
+```
+
+4. Redeploy del servicio.
