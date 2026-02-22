@@ -8,6 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
+const LIST_FORMATS_SCRIPT = path.join(__dirname, 'scripts', 'list_formats.py');
 const MAX_BODY_SIZE = '1mb';
 const TMP_COOKIES_FILE = '/tmp/yt-cookies.txt';
 
@@ -58,25 +59,36 @@ function runYtDlp(args) {
   });
 }
 
-function getYtDlpAuthArgs() {
-  const args = [];
-
+function getCookieFilePath() {
   if (process.env.YTDLP_COOKIES_B64) {
     try {
       const cookiesTxt = Buffer.from(process.env.YTDLP_COOKIES_B64, 'base64').toString('utf8');
       if (cookiesTxt.includes('youtube.com')) {
         fs.writeFileSync(TMP_COOKIES_FILE, cookiesTxt, 'utf8');
-        args.push('--cookies', TMP_COOKIES_FILE);
+        return TMP_COOKIES_FILE;
       }
     } catch {
       // Ignore invalid base64 and continue without cookies.
     }
   } else if (process.env.YTDLP_COOKIES_FILE && fs.existsSync(process.env.YTDLP_COOKIES_FILE)) {
-    args.push('--cookies', process.env.YTDLP_COOKIES_FILE);
+    return process.env.YTDLP_COOKIES_FILE;
   } else if (process.env.YTDLP_COOKIES_FROM_BROWSER) {
-    args.push('--cookies-from-browser', process.env.YTDLP_COOKIES_FROM_BROWSER);
+    return `browser:${process.env.YTDLP_COOKIES_FROM_BROWSER}`;
   }
 
+  return '';
+}
+
+function getYtDlpAuthArgs() {
+  const args = [];
+  const cookiePath = getCookieFilePath();
+  if (!cookiePath) return args;
+
+  if (cookiePath.startsWith('browser:')) {
+    args.push('--cookies-from-browser', cookiePath.replace('browser:', ''));
+  } else {
+    args.push('--cookies', cookiePath);
+  }
   return args;
 }
 
@@ -97,6 +109,55 @@ function explainYtDlpError(errorMessage) {
   return message;
 }
 
+function runPythonFormats(url) {
+  return new Promise((resolve, reject) => {
+    const cookiePath = getCookieFilePath();
+    const args = [LIST_FORMATS_SCRIPT, url];
+    if (cookiePath && !cookiePath.startsWith('browser:')) {
+      args.push(cookiePath);
+    }
+
+    const child = spawn('python3', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (err) => reject(err));
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve(stdout);
+      } else {
+        reject(new Error(stderr || stdout || `Python formats script finalizo con codigo ${code}`));
+      }
+    });
+  });
+}
+
+async function resolveDownloadFormat(url, formatId) {
+  try {
+    const stdout = await runPythonFormats(url);
+    const metadata = JSON.parse(stdout);
+    const target = (metadata.formats || []).find((f) => String(f.format_id) === String(formatId));
+    if (!target) return formatId;
+
+    const hasVideo = target.vcodec && target.vcodec !== 'none';
+    const hasAudio = target.acodec && target.acodec !== 'none';
+
+    // If selected stream is video-only, force merge with best available audio.
+    if (hasVideo && !hasAudio) {
+      return `${formatId}+bestaudio[ext=m4a]/${formatId}+bestaudio/best[ext=mp4]/best`;
+    }
+    return formatId;
+  } catch {
+    return formatId;
+  }
+}
+
 app.post('/api/formats', async (req, res) => {
   const { url } = req.body || {};
 
@@ -105,15 +166,12 @@ app.post('/api/formats', async (req, res) => {
   }
 
   try {
-    const { stdout } = await runYtDlp(buildYtDlpArgs([
-      '-J',
-      url
-    ]));
-
+    const stdout = await runPythonFormats(url);
     const metadata = JSON.parse(stdout);
     const formats = (metadata.formats || []).map((f) => {
       return {
         videoId: metadata.id || '',
+        duration: metadata.duration || 0,
         formatId: f.format_id || '',
         ext: f.ext || '',
         resolution: f.resolution || (f.width && f.height ? `${f.width}x${f.height}` : 'audio'),
@@ -122,7 +180,8 @@ app.post('/api/formats', async (req, res) => {
         acodec: f.acodec || '',
         note: f.format_note || '',
         protocol: f.protocol || '',
-        filesize: f.filesize || f.filesize_approx || ''
+        filesize: f.filesize || f.filesize_approx || '',
+        tbr: f.tbr || 0
       };
     });
 
@@ -147,33 +206,34 @@ app.post('/api/download', async (req, res) => {
   }
 
   try {
-    const outputTemplate = path.join(DOWNLOADS_DIR, '%(title)s [%(id)s].%(ext)s');
+    const requestTag = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const outputTemplate = path.join(DOWNLOADS_DIR, `%(title)s [%(id)s] [${requestTag}].%(ext)s`);
+    const resolvedFormat = await resolveDownloadFormat(url, formatId);
     const args = buildYtDlpArgs([
       '--newline',
+      '--no-progress',
       '-f',
-      formatId,
+      resolvedFormat,
+      '--merge-output-format',
+      'mp4',
+      '--print',
+      'after_move:filepath',
       '-o',
       outputTemplate,
       url
     ]);
 
-    // Si hay ffmpeg disponible, yt-dlp mergea audio+video cuando aplica.
-    await runYtDlp(args);
-
-    const { stdout: filenameStdout } = await runYtDlp(buildYtDlpArgs([
-      '--print',
-      path.join(DOWNLOADS_DIR, '%(title)s [%(id)s].%(ext)s'),
-      '-f',
-      formatId,
-      '--simulate',
-      url
-    ]));
-
-    const candidate = filenameStdout.split('\n').map((v) => v.trim()).filter(Boolean).pop();
+    const { stdout: downloadStdout } = await runYtDlp(args);
+    const candidate = downloadStdout
+      .split('\n')
+      .map((v) => v.trim())
+      .filter(Boolean)
+      .find((line) => line.startsWith(DOWNLOADS_DIR) && line.includes(requestTag) && fs.existsSync(line));
 
     if (!candidate || !fs.existsSync(candidate)) {
       const recent = fs
         .readdirSync(DOWNLOADS_DIR)
+        .filter((file) => file.includes(requestTag))
         .map((file) => ({
           file,
           mtime: fs.statSync(path.join(DOWNLOADS_DIR, file)).mtimeMs

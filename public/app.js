@@ -77,6 +77,44 @@ function saveApiBase() {
   }
 }
 
+function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = n;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  const rounded = value >= 10 ? value.toFixed(0) : value.toFixed(1);
+  return `${rounded} ${units[idx]}`;
+}
+
+function estimateBytes(format) {
+  const direct = Number(format.filesize || 0);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+
+  const tbr = Number(format.tbr || 0);
+  const duration = Number(format.duration || 0);
+  if (tbr > 0 && duration > 0) {
+    return (tbr * 1000 * duration) / 8;
+  }
+  return 0;
+}
+
+function isUsefulMediaFormat(format) {
+  if (!format?.formatId || !format?.ext) return false;
+  const note = String(format.note || '').toLowerCase();
+  if (format.ext === 'mhtml') return false;
+  if (format.ext !== 'mp4') return false;
+  if (format.formatId.startsWith('sb')) return false;
+  if (note.includes('storyboard')) return false;
+
+  const hasVideo = format.vcodec && format.vcodec !== 'none';
+  return hasVideo;
+}
+
 async function fetchFormats() {
   const url = getUrl();
   if (!url) {
@@ -99,7 +137,18 @@ async function fetchFormats() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Error desconocido.');
 
-    const filtered = (data.formats || []).filter((f) => f.formatId && f.ext);
+    const filtered = (data.formats || [])
+      .filter(isUsefulMediaFormat)
+      .map((f) => ({
+        ...f,
+        estimatedBytes: estimateBytes(f)
+      }))
+      .sort((a, b) => {
+        const aVideo = a.vcodec && a.vcodec !== 'none' ? 1 : 0;
+        const bVideo = b.vcodec && b.vcodec !== 'none' ? 1 : 0;
+        if (aVideo !== bVideo) return bVideo - aVideo;
+        return Number(b.estimatedBytes || 0) - Number(a.estimatedBytes || 0);
+      });
 
     if (!filtered.length) {
       setStatus('No se encontraron formatos para ese link.', 'err');
@@ -111,7 +160,12 @@ async function fetchFormats() {
     for (const f of filtered) {
       const opt = document.createElement('option');
       opt.value = f.formatId;
+      const hasVideo = f.vcodec && f.vcodec !== 'none';
+      const hasAudio = f.acodec && f.acodec !== 'none';
+      const mediaType = hasVideo && hasAudio ? 'video+audio' : hasVideo ? 'video' : 'audio';
+      const estLabel = formatBytes(f.estimatedBytes);
       const details = [
+        mediaType,
         f.ext,
         f.resolution || 'res?',
         f.fps && f.fps !== 'NA' ? `${f.fps}fps` : '',
@@ -119,7 +173,7 @@ async function fetchFormats() {
       ]
         .filter(Boolean)
         .join(' · ');
-      opt.textContent = `${f.formatId} - ${details}`;
+      opt.textContent = `${f.formatId} - ${details}${estLabel ? ` (${estLabel})` : ''}`;
       formatSelect.appendChild(opt);
     }
 
